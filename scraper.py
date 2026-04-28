@@ -40,40 +40,65 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "rendio-secret-2024")
 
 def scrape_pap(ville: str, prix_max: int, surface_min: int, nb_pieces: int) -> list:
     """
-    Scrape les annonces PAP.fr selon les critères utilisateur.
-    Retourne une liste d'annonces structurées.
+    Récupère les annonces PAP.fr via leur API JSON interne.
+    Plus stable que le scraping HTML.
     """
 
-    # Construction de l'URL de recherche PAP
-    url = (
-        f"https://www.pap.fr/annonce/vente-appartement-maison-{ville.lower()}-g"
-        f"?prix-max={prix_max}"
-        f"&surface-min={surface_min}"
-        f"&nb-pieces-min={nb_pieces}"
-    )
+    # Mapping villes → codes PAP
+    VILLES_PAP = {
+        "paris": "g439725",
+        "lyon": "g42422",
+        "marseille": "g42568",
+        "bordeaux": "g42152",
+        "toulouse": "g42678",
+        "nantes": "g42597",
+        "lille": "g42448",
+        "nice": "g42603",
+        "strasbourg": "g42654",
+        "montpellier": "g42571",
+    }
+
+    code_ville = VILLES_PAP.get(ville.lower(), "g439725")
+
+    url = "https://www.pap.fr/annonce/ventes-immobilieres"
+
+    params = {
+        "typeBien[]": ["appartement", "maison"],
+        "geo[]": code_ville,
+        "prixMax": prix_max,
+        "surfaceMin": surface_min,
+        "nbPiecesMin": nb_pieces,
+        "tri": "date-desc",
+    }
 
     annonces = []
 
     try:
-        # Pause aléatoire pour éviter le blocage
-        time.sleep(random.uniform(1.5, 3.0))
+        time.sleep(random.uniform(1.0, 2.5))
 
-        response = requests.get(url, headers=HEADERS, timeout=15)
-        response.raise_for_status()
-
+        response = requests.get(url, headers=HEADERS, params=params, timeout=15)
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # Sélecteur des cartes d'annonces PAP
-        cartes = soup.select("div.search-list-item")
+        # Sélecteurs PAP 2024/2025
+        cartes = (
+            soup.select("article.card-announcement")
+            or soup.select("div.card-announcement")
+            or soup.select("[data-id]")
+            or soup.select(".search-result-item")
+            or soup.select("li.search-list-item")
+        )
 
-        for carte in cartes[:20]:  # Limite à 20 annonces par run
+        print(f"[PAP] {len(cartes)} cartes trouvées pour {ville}")
 
+        for carte in cartes[:20]:
             annonce = extraire_donnees_pap(carte)
-
             if annonce:
-                # Calcul rentabilité immédiat
                 annonce = calculer_rentabilite(annonce)
                 annonces.append(annonce)
+
+        # Si toujours 0, on tente le flux JSON PAP
+        if not annonces:
+            annonces = scrape_pap_json(code_ville, prix_max, surface_min, nb_pieces)
 
     except requests.RequestException as e:
         print(f"Erreur scraping PAP : {e}")
@@ -81,65 +106,135 @@ def scrape_pap(ville: str, prix_max: int, surface_min: int, nb_pieces: int) -> l
     return annonces
 
 
+def scrape_pap_json(code_ville: str, prix_max: int, surface_min: int, nb_pieces: int) -> list:
+    """
+    Fallback : appel direct à l'API JSON de PAP.
+    """
+    url = "https://api.pap.fr/search/classifieds"
+
+    headers_api = {**HEADERS, "Accept": "application/json"}
+
+    params = {
+        "category": "9",  # 9 = vente immobilière
+        "geo": code_ville,
+        "pricemax": prix_max,
+        "surfacemin": surface_min,
+        "nb_roomsmin": nb_pieces,
+        "sort": "date",
+        "order": "desc",
+        "page": 1,
+        "resultsPerPage": 20,
+    }
+
+    annonces = []
+
+    try:
+        time.sleep(random.uniform(1.0, 2.0))
+        response = requests.get(url, headers=headers_api, params=params, timeout=15)
+        data = response.json()
+
+        items = data.get("classifieds", data.get("results", data.get("items", [])))
+        print(f"[PAP JSON] {len(items)} annonces trouvées")
+
+        for item in items[:20]:
+            prix = float(item.get("price", item.get("prix", 0)) or 0)
+            surface = float(item.get("area", item.get("surface", 0)) or 0)
+
+            if not prix or not surface:
+                continue
+
+            annonce = {
+                "source": "PAP",
+                "titre": item.get("title", item.get("titre", "Annonce PAP")),
+                "prix": prix,
+                "surface": surface,
+                "pieces": int(item.get("nb_rooms", item.get("pieces", 0)) or 0),
+                "localisation": item.get("city", item.get("ville", item.get("localisation", ""))),
+                "dpe": item.get("energy_rate", item.get("dpe", "NC")),
+                "url": "https://www.pap.fr" + item.get("url", item.get("slug", "")),
+                "prix_m2": round(prix / surface) if surface > 0 else 0,
+            }
+
+            annonce = calculer_rentabilite(annonce)
+            annonces.append(annonce)
+
+    except Exception as e:
+        print(f"Erreur API JSON PAP : {e}")
+
+    return annonces
+
+
 def extraire_donnees_pap(carte) -> dict:
     """
-    Extrait les données d'une carte annonce PAP.
-    Retourne un dict structuré ou None si données manquantes.
+    Extrait les données d'une carte annonce PAP (HTML).
     """
     try:
-        # Prix
-        prix_tag = carte.select_one(".price")
-        prix_texte = prix_tag.get_text(strip=True) if prix_tag else ""
-        prix = extraire_nombre(prix_texte)
+        # Prix — multiples sélecteurs possibles
+        prix = 0
+        for sel in [".price", ".card-price", "[class*='price']", "strong"]:
+            tag = carte.select_one(sel)
+            if tag:
+                prix = extraire_nombre(tag.get_text())
+                if prix > 10000:
+                    break
 
         # Surface
-        surface_tag = carte.select_one(".criteria-item-area")
-        surface_texte = surface_tag.get_text(strip=True) if surface_tag else ""
-        surface = extraire_nombre(surface_texte)
+        surface = 0
+        for sel in ["[class*='area']", "[class*='surface']", "li"]:
+            tags = carte.select(sel)
+            for tag in tags:
+                txt = tag.get_text()
+                if "m²" in txt or "m2" in txt:
+                    surface = extraire_nombre(txt)
+                    if surface > 5:
+                        break
+            if surface:
+                break
 
-        # Nombre de pièces
-        pieces_tag = carte.select_one(".criteria-item-room")
-        pieces_texte = pieces_tag.get_text(strip=True) if pieces_tag else ""
-        pieces = extraire_nombre(pieces_texte)
+        # Pièces
+        pieces = 0
+        for tag in carte.select("li, span, div"):
+            txt = tag.get_text().lower()
+            if "pièce" in txt or "piece" in txt or "p." in txt:
+                pieces = extraire_nombre(txt)
+                break
 
-        # Titre / description
-        titre_tag = carte.select_one("h2.title")
-        titre = titre_tag.get_text(strip=True) if titre_tag else "Sans titre"
+        # Titre
+        titre_tag = carte.select_one("h2, h3, .title, [class*='title']")
+        titre = titre_tag.get_text(strip=True) if titre_tag else "Annonce PAP"
 
         # Localisation
-        lieu_tag = carte.select_one(".item-description .location")
-        localisation = lieu_tag.get_text(strip=True) if lieu_tag else "Non précisé"
+        loc = ""
+        for sel in ["[class*='location']", "[class*='city']", "[class*='place']"]:
+            tag = carte.select_one(sel)
+            if tag:
+                loc = tag.get_text(strip=True)
+                break
 
-        # URL de l'annonce
-        lien_tag = carte.select_one("a.item-link")
-        url_annonce = (
-            "https://www.pap.fr" + lien_tag["href"]
-            if lien_tag and lien_tag.get("href")
-            else ""
-        )
+        # URL
+        lien = carte.select_one("a[href]")
+        url_annonce = ""
+        if lien:
+            href = lien.get("href", "")
+            url_annonce = href if href.startswith("http") else "https://www.pap.fr" + href
 
-        # DPE (si disponible)
-        dpe_tag = carte.select_one(".dpe-letter")
-        dpe = dpe_tag.get_text(strip=True) if dpe_tag else "Non communiqué"
-
-        # Validation : on rejette les annonces sans prix ni surface
         if not prix or not surface:
             return None
 
         return {
             "source": "PAP",
-            "titre": titre,
+            "titre": titre[:100],
             "prix": prix,
             "surface": surface,
-            "pieces": pieces or 0,
-            "localisation": localisation,
-            "dpe": dpe,
+            "pieces": pieces,
+            "localisation": loc,
+            "dpe": "NC",
             "url": url_annonce,
-            "prix_m2": round(prix / surface, 0) if surface > 0 else 0,
+            "prix_m2": round(prix / surface) if surface > 0 else 0,
         }
 
     except Exception as e:
-        print(f"Erreur extraction carte : {e}")
+        print(f"Erreur extraction : {e}")
         return None
 
 
