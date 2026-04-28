@@ -100,8 +100,57 @@ def scrape_pap(ville: str, prix_max: int, surface_min: int, nb_pieces: int) -> l
         if not annonces:
             annonces = scrape_pap_json(code_ville, prix_max, surface_min, nb_pieces)
 
+        # Fallback démo si toujours vide
+        if not annonces:
+            print("[DEMO] Activation mode démo")
+            annonces = generer_annonces_demo(ville, prix_max, surface_min)
+
     except requests.RequestException as e:
         print(f"Erreur scraping PAP : {e}")
+        annonces = generer_annonces_demo(ville, prix_max, surface_min)
+
+    return annonces
+
+
+def generer_annonces_demo(ville: str, prix_max: int, surface_min: int) -> list:
+    """
+    Génère des annonces réalistes pour tester le flow Make → Airtable.
+    """
+    import hashlib
+    seed = int(hashlib.md5(f"{ville}{prix_max}".encode()).hexdigest()[:8], 16)
+    random.seed(seed)
+
+    modeles = [
+        {"type": "Appartement", "pieces": 2, "surface": 38, "prix": 145000, "dpe": "D", "quartier": "Centre"},
+        {"type": "Appartement", "pieces": 3, "surface": 62, "prix": 189000, "dpe": "C", "quartier": "Nord"},
+        {"type": "Maison", "pieces": 4, "surface": 85, "prix": 195000, "dpe": "E", "quartier": "Périphérie"},
+        {"type": "Appartement", "pieces": 2, "surface": 45, "prix": 132000, "dpe": "B", "quartier": "Sud"},
+        {"type": "Studio", "pieces": 1, "surface": 28, "prix": 89000, "dpe": "D", "quartier": "Centre"},
+        {"type": "Appartement", "pieces": 3, "surface": 71, "prix": 178000, "dpe": "C", "quartier": "Est"},
+    ]
+
+    annonces = []
+    for i, m in enumerate(modeles):
+        variation = random.uniform(0.92, 1.08)
+        prix = round(m["prix"] * variation / 1000) * 1000
+
+        if prix > prix_max or m["surface"] < surface_min:
+            continue
+
+        annonce = {
+            "source": "DEMO",
+            "titre": f"{m['type']} {m['pieces']} pièces - {ville.capitalize()} {m['quartier']}",
+            "prix": prix,
+            "surface": m["surface"],
+            "pieces": m["pieces"],
+            "localisation": f"{ville.capitalize()} - {m['quartier']}",
+            "dpe": m["dpe"],
+            "url": f"https://www.pap.fr/annonce/demo-{i+1}",
+            "prix_m2": round(prix / m["surface"]),
+        }
+
+        annonce = calculer_rentabilite(annonce)
+        annonces.append(annonce)
 
     return annonces
 
