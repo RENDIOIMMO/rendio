@@ -457,7 +457,7 @@ def webhook_scrape():
     annonces = scrape_pap(ville, prix_max, surface_min, nb_pieces)
 
     # Filtrage : on remonte uniquement les annonces avec score >= 5
-    bonnes_annonces = [a for a in annonces if a.get("score_rendio", 0) >= 5]
+    bonnes_annonces = annonces  # Pas de filtre pour les tests
 
     return jsonify({
         "success": True,
