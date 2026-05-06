@@ -417,6 +417,126 @@ def extraire_nombre(texte: str) -> float:
 
 
 # ─────────────────────────────────────────
+
+def scrape_leboncoin(ville: str, prix_max: int, surface_min: int, nb_pieces: int) -> list:
+    """
+    Scrape Leboncoin via leur API interne JSON.
+    Plus accessible que PAP.
+    """
+
+    VILLES_LBC = {
+        "paris": "Paris",
+        "lyon": "Lyon",
+        "marseille": "Marseille",
+        "bordeaux": "Bordeaux",
+        "toulouse": "Toulouse",
+        "nantes": "Nantes",
+        "lille": "Lille",
+        "nice": "Nice",
+        "strasbourg": "Strasbourg",
+        "montpellier": "Montpellier",
+        "rennes": "Rennes",
+        "grenoble": "Grenoble",
+    }
+
+    ville_lbc = VILLES_LBC.get(ville.lower(), ville.capitalize())
+
+    url = "https://api.leboncoin.fr/finder/classified/search"
+
+    headers_lbc = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "fr-FR,fr;q=0.9",
+        "Content-Type": "application/json",
+        "Origin": "https://www.leboncoin.fr",
+        "Referer": "https://www.leboncoin.fr/",
+        "api_key": "ba0c2423-c06b-4eba-b617-114dba9f8c6c",
+    }
+
+    payload = {
+        "filters": {
+            "category": {"id": "9"},  # 9 = Ventes immobilières
+            "location": {
+                "city_zipcodes": [{"city": ville_lbc}]
+            },
+            "keywords": {},
+            "ranges": {
+                "price": {"max": prix_max},
+                "square": {"min": surface_min},
+                "rooms": {"min": nb_pieces},
+            },
+        },
+        "limit": 20,
+        "sort_by": "time",
+        "sort_order": "desc",
+        "offset": 0,
+    }
+
+    annonces = []
+
+    try:
+        time.sleep(random.uniform(1.0, 2.5))
+        response = requests.post(url, json=payload, headers=headers_lbc, timeout=15)
+        data = response.json()
+
+        items = data.get("ads", [])
+        print(f"[LBC] {len(items)} annonces trouvées pour {ville}")
+
+        for item in items:
+            try:
+                prix = float(item.get("price", [0])[0] if isinstance(item.get("price"), list) else item.get("price", 0))
+                
+                # Surface dans les attributs
+                surface = 0
+                pieces = 0
+                dpe = "NC"
+                
+                for attr in item.get("attributes", []):
+                    key = attr.get("key", "")
+                    val = attr.get("value", attr.get("value_label", ""))
+                    if key == "square":
+                        surface = float(val) if val else 0
+                    elif key == "rooms":
+                        pieces = int(val) if val else 0
+                    elif key == "energy_rate":
+                        dpe = str(val).upper()
+
+                if not prix or not surface:
+                    continue
+
+                titre = item.get("subject", "Annonce Leboncoin")
+                localisation = item.get("location", {}).get("city", ville.capitalize())
+                url_annonce = item.get("url", f"https://www.leboncoin.fr/ventes_immobilieres/{item.get('list_id', '')}.htm")
+
+                annonce = {
+                    "source": "Leboncoin",
+                    "titre": titre[:100],
+                    "prix": prix,
+                    "surface": surface,
+                    "pieces": pieces,
+                    "localisation": localisation,
+                    "dpe": dpe,
+                    "url": url_annonce,
+                    "prix_m2": round(prix / surface) if surface > 0 else 0,
+                }
+
+                annonce = calculer_rentabilite(annonce)
+                annonces.append(annonce)
+
+            except Exception as e:
+                print(f"Erreur item LBC : {e}")
+                continue
+
+    except Exception as e:
+        print(f"Erreur API LBC : {e}")
+
+    # Fallback démo si vide
+    if not annonces:
+        print("[LBC] Pas de résultats — fallback démo")
+        annonces = generer_annonces_demo(ville, prix_max, surface_min)
+
+    return annonces
+
 # ENDPOINTS FLASK (appelés par Make)
 # ─────────────────────────────────────────
 
@@ -453,18 +573,21 @@ def webhook_scrape():
     surface_min = int(data.get("surface_min", 25))
     nb_pieces = int(data.get("nb_pieces", 1))
 
-    # Scraping
-    annonces = scrape_pap(ville, prix_max, surface_min, nb_pieces)
-
-    # Filtrage : on remonte uniquement les annonces avec score >= 5
-    bonnes_annonces = annonces  # Pas de filtre pour les tests
+    # Scraping — Leboncoin en priorité, PAP en fallback
+    source = data.get("source", "leboncoin")
+    if source == "pap":
+        annonces = scrape_pap(ville, prix_max, surface_min, nb_pieces)
+    else:
+        annonces = scrape_leboncoin(ville, prix_max, surface_min, nb_pieces)
+        if not annonces:
+            annonces = scrape_pap(ville, prix_max, surface_min, nb_pieces)
 
     return jsonify({
         "success": True,
         "total_trouvees": len(annonces),
-        "total_filtrees": len(bonnes_annonces),
+        "total_filtrees": len(annonces),
         "ville": ville,
-        "annonces": bonnes_annonces,
+        "annonces": annonces,
     })
 
 
