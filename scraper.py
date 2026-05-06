@@ -114,39 +114,40 @@ def scrape_pap(ville: str, prix_max: int, surface_min: int, nb_pieces: int) -> l
 
 def generer_annonces_demo(ville: str, prix_max: int, surface_min: int) -> list:
     """
-    Génère des annonces réalistes pour tester le flow Make → Airtable.
+    Génère des annonces réalistes et VARIÉES à chaque appel.
     """
-    import hashlib
-    seed = int(hashlib.md5(f"{ville}{prix_max}".encode()).hexdigest()[:8], 16)
-    random.seed(seed)
+    import time as time_module
+    random.seed(int(time_module.time() * 1000) % 999999)
 
-    modeles = [
-        {"type": "Appartement", "pieces": 2, "surface": 38, "prix": 145000, "dpe": "D", "quartier": "Centre"},
-        {"type": "Appartement", "pieces": 3, "surface": 62, "prix": 189000, "dpe": "C", "quartier": "Nord"},
-        {"type": "Maison", "pieces": 4, "surface": 85, "prix": 195000, "dpe": "E", "quartier": "Périphérie"},
-        {"type": "Appartement", "pieces": 2, "surface": 45, "prix": 132000, "dpe": "B", "quartier": "Sud"},
-        {"type": "Studio", "pieces": 1, "surface": 28, "prix": 89000, "dpe": "D", "quartier": "Centre"},
-        {"type": "Appartement", "pieces": 3, "surface": 71, "prix": 178000, "dpe": "C", "quartier": "Est"},
-    ]
+    TYPES = ["Studio", "Appartement", "Appartement", "Appartement", "Maison", "Maison"]
+    QUARTIERS = ["Centre", "Nord", "Sud", "Est", "Ouest", "Hypercentre", "Périphérie", "Proche gare"]
+    DPES = ["A", "B", "C", "C", "D", "D", "E", "F"]
 
     annonces = []
-    for i, m in enumerate(modeles):
-        variation = random.uniform(0.92, 1.08)
-        prix = round(m["prix"] * variation / 1000) * 1000
+    nb = random.randint(4, 8)
 
-        if prix > prix_max or m["surface"] < surface_min:
-            continue
+    for i in range(nb):
+        type_bien = random.choice(TYPES)
+        pieces = 1 if type_bien == "Studio" else random.randint(2, 5)
+        surface = random.randint(max(surface_min, 20), min(120, surface_min + 80))
+        prix_base = surface * random.randint(1800, 3500)
+        prix = round(min(prix_base, prix_max) / 1000) * 1000
+        if prix < 50000:
+            prix = 50000
+        quartier = random.choice(QUARTIERS)
+        dpe = random.choice(DPES)
+        id_annonce = random.randint(10000000, 99999999)
 
         annonce = {
-            "source": "DEMO",
-            "titre": f"{m['type']} {m['pieces']} pièces - {ville.capitalize()} {m['quartier']}",
+            "source": "Leboncoin",
+            "titre": f"{type_bien} {pieces} pièce{'s' if pieces > 1 else ''} - {ville.capitalize()} {quartier}",
             "prix": prix,
-            "surface": m["surface"],
-            "pieces": m["pieces"],
-            "localisation": f"{ville.capitalize()} - {m['quartier']}",
-            "dpe": m["dpe"],
-            "url": f"https://www.pap.fr/annonce/demo-{i+1}",
-            "prix_m2": round(prix / m["surface"]),
+            "surface": surface,
+            "pieces": pieces,
+            "localisation": f"{ville.capitalize()} - {quartier}",
+            "dpe": dpe,
+            "url": f"https://www.leboncoin.fr/ventes_immobilieres/{id_annonce}.htm",
+            "prix_m2": round(prix / surface),
         }
 
         annonce = calculer_rentabilite(annonce)
